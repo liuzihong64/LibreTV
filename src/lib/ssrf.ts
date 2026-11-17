@@ -4,6 +4,17 @@ import { lookup as callbackLookup } from 'node:dns';
 import dns from 'node:dns/promises';
 import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
 
+/**
+ * 运行环境探测：Cloudflare Workers。
+ *
+ * workerd 的 tls 实现不支持 ALPNProtocols，undici 的 buildConnector / Agent
+ * 一建立连接就抛 ERR_OPTION_NOT_IMPLEMENTED（表现为 /api/proxy、/api/search
+ * 全部 502「上游请求失败」）。在 Workers 上必须绕开这条 undici 通道，
+ * 改用运行时原生 fetch 出网。
+ */
+const IS_WORKERS =
+  typeof navigator !== 'undefined' && /Cloudflare-Workers/i.test(navigator.userAgent ?? '');
+
 /** 去掉 URL.hostname 对 IPv6 附加的方括号（"[::1]" → "::1"） */
 function stripBrackets(host: string): string {
   return host.trim().replace(/^\[+|\]+$/g, '');
@@ -228,6 +239,12 @@ export function installFetchSSRFProtection(): void {
   const g = globalThis as unknown as Record<symbol, boolean>;
   if (g[GLOBAL_FETCH_WRAPPED]) return;
   g[GLOBAL_FETCH_WRAPPED] = true;
+
+  // Cloudflare Workers 上不包装 fetch：undici 那条通道在 workerd 无法建连，
+  // 包装反而让所有出网请求失败。此分支下直接使用运行时原生 fetch；
+  // URL 级 SSRF 校验（isValidProxyUrl / checkUpstreamAllowed）仍然执行，
+  // 连接层 DNS 校验在 Workers 上无意义（Workers 本身访问不到私网）。
+  if (IS_WORKERS) return;
 
   const originalFetch = globalThis.fetch;
 
